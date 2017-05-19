@@ -20,7 +20,7 @@ from twisted.names.client import createResolver
 from twisted.names.authority import FileAuthority
 from twisted.names.common import ResolverBase
 from twisted.names.resolve import ResolverChain
-from twisted.names.dns import DNSDatagramProtocol, Record_SOA
+from twisted.names.dns import Name, DNSDatagramProtocol, Record_SOA, AuthoritativeDomainError
 from twisted.python import log
 
 from itertools import chain
@@ -209,6 +209,30 @@ class RuntimeAuthority(FileAuthority):
     def delete_record(self, name):
         del self.records["%s.%s" % (name, self.domain)]
         self.save()
+
+    def _lookup(self, *args, **kwargs):
+        result = FileAuthority._lookup(self, *args, **kwargs)
+        def replace_wildcard(results):
+            for e in results[0]:
+                e.name = Name(args[0])
+            return results
+
+        def lookup_wildcard(error, subname):
+            error.trap(AuthoritativeDomainError)
+
+            new_args = list(args)
+            new_args[0] = ".".join(["*"] + subname)
+            new_result = FileAuthority._lookup(self, *new_args, **kwargs)
+            if len(subname):
+                new_result.addCallbacks(replace_wildcard, errback=lookup_wildcard, errbackArgs=(subname[1:],))
+            else:
+                new_result.addCallback(replace_wildcard)
+
+            return new_result
+
+        result.addErrback(lookup_wildcard, args[0].split(".")[1:]  )
+
+        return result
 
 
 class CallsignResolverChain(ResolverChain):
